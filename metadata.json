@@ -1,0 +1,5 @@
+{
+  "name": "TLSGuard",
+  "description": "Encrypted Infrastructure Phishing Detection Platform using TLS analysis and threat intelligence.",
+  "requestFramePermissions": []
+}
