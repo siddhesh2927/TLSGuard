@@ -47,25 +47,29 @@ interface FeatureImportance {
   impact: "positive" | "negative";
 }
 
-interface ScanResult {
-  id: number;
-  domain: string;
-  ip_address: string;
-  prediction: "phishing" | "benign";
-  confidence: number;
-  risk_score: number;
-  tls_version: string;
-  cipher_suite: string;
+interface TLSInfo {
+  tlsVersion: string;
+  cipherSuite: string;
   issuer: string;
-  valid_from: string;
-  valid_to: string;
-  virustotal_score: number;
-  abuseipdb_score: number;
-  hosting_provider: string;
+  validFrom: string;
+  validTo: string;
+}
+
+interface ThreatIntel {
+  vtScore: number;
+  abuseScore: number;
+  hosting: string;
   country: string;
-  reasoning?: string;
-  feature_importance?: FeatureImportance[];
-  created_at: string;
+}
+
+interface ScanResult {
+  domain: string;
+  tls_risk_score: number;
+  security_level: string;
+  suspicious: boolean;
+  confidence: number;
+  tls: TLSInfo;
+  intel: ThreatIntel;
 }
 
 // --- Components ---
@@ -165,13 +169,14 @@ export default function App() {
   };
 
   const riskData = selectedScan ? [
-    { name: "Risk", value: selectedScan.risk_score },
-    { name: "Safe", value: 100 - selectedScan.risk_score },
+    { name: "Risk", value: selectedScan.tls_risk_score },
+    { name: "Safe", value: 100 - selectedScan.tls_risk_score },
   ] : [];
 
-  const trendData = [...history].reverse().map(s => ({
-    date: new Date(s.created_at).toLocaleDateString(),
-    score: s.risk_score,
+  // Trend data: use domain and risk score, no created_at in new API
+  const trendData = history.map((s, i) => ({
+    date: `Scan ${i + 1}`,
+    score: s.tls_risk_score,
     domain: s.domain
   }));
 
@@ -315,13 +320,13 @@ export default function App() {
                   </button>
                   <h2 className="text-3xl font-bold tracking-tighter flex items-center gap-3">
                     {selectedScan.domain}
-                    {selectedScan.prediction === "phishing" ? (
-                      <Badge variant="danger">Malicious</Badge>
+                    {selectedScan.suspicious ? (
+                      <Badge variant="danger">Suspicious</Badge>
                     ) : (
-                      <Badge variant="success">Benign</Badge>
+                      <Badge variant="success">Safe</Badge>
                     )}
                   </h2>
-                  <p className="text-xs font-mono opacity-50">IP: {selectedScan.ip_address} • Scanned on {new Date(selectedScan.created_at).toLocaleString()}</p>
+                  {/* IP and scan date removed: not present in new backend response */}
                 </div>
                 <div className="flex gap-2">
                   <button className="p-2 border border-ink/10 rounded hover:bg-white transition-colors">
@@ -355,7 +360,7 @@ export default function App() {
                         </PieChart>
                       </ResponsiveContainer>
                       <div className="absolute inset-0 flex flex-col items-center justify-center">
-                        <span className="text-4xl font-bold tracking-tighter">{selectedScan.risk_score}</span>
+                        <span className="text-4xl font-bold tracking-tighter">{selectedScan.tls_risk_score}</span>
                         <span className="text-[10px] font-mono uppercase opacity-50">Risk Score</span>
                       </div>
                     </div>
@@ -364,7 +369,7 @@ export default function App() {
                         Confidence: {(selectedScan.confidence * 100).toFixed(1)}%
                       </p>
                       <p className="text-xs text-ink/60 italic font-serif">
-                        "{selectedScan.reasoning}"
+                        Security Level: {selectedScan.security_level}
                       </p>
                     </div>
                   </div>
@@ -378,14 +383,14 @@ export default function App() {
                         <label className="text-[10px] font-mono uppercase opacity-50 block mb-1">Protocol Version</label>
                         <div className="flex items-center gap-2">
                           <Lock className="w-4 h-4 text-accent" />
-                          <span className="font-mono text-sm font-bold">{selectedScan.tls_version}</span>
+                          <span className="font-mono text-sm font-bold">{selectedScan.tls.tlsVersion}</span>
                         </div>
                       </div>
                       <div>
                         <label className="text-[10px] font-mono uppercase opacity-50 block mb-1">Cipher Suite</label>
                         <div className="flex items-center gap-2">
                           <Activity className="w-4 h-4 text-accent" />
-                          <span className="font-mono text-xs break-all">{selectedScan.cipher_suite}</span>
+                          <span className="font-mono text-xs break-all">{selectedScan.tls.cipherSuite}</span>
                         </div>
                       </div>
                     </div>
@@ -394,7 +399,7 @@ export default function App() {
                         <label className="text-[10px] font-mono uppercase opacity-50 block mb-1">Certificate Issuer</label>
                         <div className="flex items-center gap-2">
                           <Shield className="w-4 h-4 text-accent" />
-                          <span className="font-mono text-sm font-bold">{selectedScan.issuer}</span>
+                          <span className="font-mono text-sm font-bold">{selectedScan.tls.issuer}</span>
                         </div>
                       </div>
                       <div>
@@ -402,7 +407,7 @@ export default function App() {
                         <div className="flex items-center gap-2">
                           <Globe className="w-4 h-4 text-accent" />
                           <span className="font-mono text-[10px]">
-                            {new Date(selectedScan.valid_from).toLocaleDateString()} - {new Date(selectedScan.valid_to).toLocaleDateString()}
+                            {new Date(selectedScan.tls.validFrom).toLocaleDateString()} - {new Date(selectedScan.tls.validTo).toLocaleDateString()}
                           </span>
                         </div>
                       </div>
@@ -416,8 +421,8 @@ export default function App() {
                     <div className="p-4 bg-ink/5 rounded border border-ink/5">
                       <label className="text-[10px] font-mono uppercase opacity-50 block mb-2">VirusTotal</label>
                       <div className="flex items-end justify-between">
-                        <span className={cn("text-2xl font-bold", selectedScan.virustotal_score > 0 ? "text-danger" : "text-success")}>
-                          {selectedScan.virustotal_score}
+                        <span className={cn("text-2xl font-bold", selectedScan.intel.vtScore === -1 ? "text-danger text-xs" : (selectedScan.intel.vtScore > 0 ? "text-danger" : "text-success"))}>
+                          {selectedScan.intel.vtScore === -1 ? "INVALID KEY" : selectedScan.intel.vtScore}
                         </span>
                         <span className="text-[10px] font-mono opacity-50">Detections</span>
                       </div>
@@ -425,8 +430,8 @@ export default function App() {
                     <div className="p-4 bg-ink/5 rounded border border-ink/5">
                       <label className="text-[10px] font-mono uppercase opacity-50 block mb-2">AbuseIPDB</label>
                       <div className="flex items-end justify-between">
-                        <span className={cn("text-2xl font-bold", selectedScan.abuseipdb_score > 50 ? "text-danger" : "text-success")}>
-                          {selectedScan.abuseipdb_score}%
+                        <span className={cn("text-2xl font-bold", selectedScan.intel.abuseScore === -1 ? "text-danger text-xs" : (selectedScan.intel.abuseScore > 50 ? "text-danger" : "text-success"))}>
+                          {selectedScan.intel.abuseScore === -1 ? "AUTH ERROR" : `${selectedScan.intel.abuseScore}%`}
                         </span>
                         <span className="text-[10px] font-mono opacity-50">Abuse Score</span>
                       </div>
@@ -435,45 +440,20 @@ export default function App() {
                       <label className="text-[10px] font-mono uppercase opacity-50 block mb-2">Hosting Provider</label>
                       <div className="flex items-center gap-2">
                         <Server className="w-4 h-4 opacity-50" />
-                        <span className="text-xs font-bold truncate">{selectedScan.hosting_provider}</span>
+                        <span className="text-xs font-bold truncate">{selectedScan.intel.hosting}</span>
                       </div>
                     </div>
                     <div className="p-4 bg-ink/5 rounded border border-ink/5">
                       <label className="text-[10px] font-mono uppercase opacity-50 block mb-2">Location</label>
                       <div className="flex items-center gap-2">
                         <Globe className="w-4 h-4 opacity-50" />
-                        <span className="text-xs font-bold">{selectedScan.country}</span>
+                        <span className="text-xs font-bold">{selectedScan.intel.country}</span>
                       </div>
                     </div>
                   </div>
                 </Card>
 
-                {/* Feature Importance Card */}
-                {selectedScan.feature_importance && (
-                  <Card title="MODEL FEATURE IMPORTANCE" className="lg:col-span-3">
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {selectedScan.feature_importance.map((feat, i) => (
-                        <div key={i} className="flex items-center justify-between p-3 border border-ink/5 rounded bg-white">
-                          <div className="flex flex-col">
-                            <span className="text-[10px] font-mono uppercase font-bold">{feat.feature}</span>
-                            <span className={cn("text-[8px] font-mono uppercase", feat.impact === "positive" ? "text-danger" : "text-success")}>
-                              {feat.impact === "positive" ? "Increases Risk" : "Decreases Risk"}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <div className="w-24 h-1.5 bg-ink/5 rounded-full overflow-hidden">
-                              <div 
-                                className={cn("h-full", feat.impact === "positive" ? "bg-danger" : "bg-success")}
-                                style={{ width: `${feat.importance}%` }}
-                              />
-                            </div>
-                            <span className="text-[10px] font-mono font-bold">{feat.importance}%</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </Card>
-                )}
+                {/* Feature Importance Card removed: not present in new backend response */}
               </div>
             </motion.div>
           )}
@@ -517,40 +497,30 @@ export default function App() {
 
               <div className="bg-white border border-ink/10 rounded-lg overflow-hidden">
                 <div className="data-row bg-ink/5 border-b border-ink/10 cursor-default hover:bg-ink/5 hover:text-ink">
-                  <div className="col-header">ID</div>
+                  <div className="col-header">#</div>
                   <div className="col-header">Domain</div>
-                  <div className="col-header">Prediction</div>
+                  <div className="col-header">Suspicious</div>
                   <div className="col-header">Risk Score</div>
-                  <div className="col-header">Actions</div>
                 </div>
-                {history.map((scan) => (
+                {history.map((scan, idx) => (
                   <div 
-                    key={scan.id} 
+                    key={idx} 
                     className="data-row"
                     onClick={() => {
                       setSelectedScan(scan);
                       setView("report");
                     }}
                   >
-                    <div className="data-value text-[10px] opacity-50">#{scan.id}</div>
+                    <div className="data-value text-[10px] opacity-50">#{idx + 1}</div>
                     <div className="font-bold text-sm truncate pr-4">{scan.domain}</div>
                     <div>
-                      {scan.prediction === "phishing" ? (
-                        <Badge variant="danger">Phishing</Badge>
+                      {scan.suspicious ? (
+                        <Badge variant="danger">Suspicious</Badge>
                       ) : (
-                        <Badge variant="success">Benign</Badge>
+                        <Badge variant="success">Safe</Badge>
                       )}
                     </div>
-                    <div className="data-value font-bold">{scan.risk_score}</div>
-                    <div className="flex items-center gap-2">
-                      <button 
-                        onClick={(e) => handleDelete(e, scan.id)}
-                        className="p-1 hover:text-danger transition-colors opacity-50 hover:opacity-100"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                      <ChevronRight className="w-4 h-4 opacity-20" />
-                    </div>
+                    <div className="data-value font-bold">{scan.tls_risk_score}</div>
                   </div>
                 ))}
                 {history.length === 0 && (

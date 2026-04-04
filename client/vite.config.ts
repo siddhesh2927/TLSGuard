@@ -10,6 +10,9 @@ export default defineConfig(({mode}) => {
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },
+    optimizeDeps: {
+      rolldownOptions: {}, // Opt-in to Rolldown options as recommended
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
