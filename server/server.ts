@@ -16,6 +16,7 @@ console.log("VT KEY:", process.env.VIRUSTOTAL_API_KEY ? process.env.VIRUSTOTAL_A
 console.log("ABUSE KEY:", process.env.ABUSEIPDB_API_KEY ? process.env.ABUSEIPDB_API_KEY.slice(0, 5) + "..." : "undefined");
 console.log("IPINFO:", process.env.IPINFO_TOKEN ? process.env.IPINFO_TOKEN.slice(0, 5) + "..." : "undefined");
 
+// ─────────────────────────────────────────────
 // Database Init
 // ─────────────────────────────────────────────
 db.exec(`
@@ -26,6 +27,7 @@ db.exec(`
     prediction TEXT,
     confidence REAL,
     risk_score INTEGER,
+    security_posture TEXT,
     tls_version TEXT,
     cipher_suite TEXT,
     issuer TEXT,
@@ -44,16 +46,14 @@ db.exec(`
 `);
 
 // Migration: Add columns if they don't exist
-try {
-  db.exec("ALTER TABLE scans ADD COLUMN tls TEXT");
-  db.exec("ALTER TABLE scans ADD COLUMN intel TEXT");
-} catch (e) {}
-
+try { db.exec("ALTER TABLE scans ADD COLUMN tls TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE scans ADD COLUMN intel TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE scans ADD COLUMN security_posture TEXT"); } catch (e) {}
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:5001";
 
 // ─────────────────────────────────────────────
-// TLS Info
+// TLS Info Extraction
 // ─────────────────────────────────────────────
 async function getTLSInfo(domain: string): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -104,7 +104,7 @@ async function getTLSInfo(domain: string): Promise<any> {
 }
 
 // ─────────────────────────────────────────────
-// Threat Intel
+// Threat Intelligence Collection
 // ─────────────────────────────────────────────
 async function getThreatIntel(domain: string, ip: string) {
   let vtScore = 0;
@@ -165,9 +165,11 @@ async function getThreatIntel(domain: string, ip: string) {
 }
 
 // ─────────────────────────────────────────────
-// ML Prediction
+// ML Risk Assessment
+// All risk scoring and classification is driven entirely
+// by the ML model — no hardcoded rules or weightings.
 // ─────────────────────────────────────────────
-async function predictRisk(tlsInfo: any, threatIntel: any) {
+async function assessRisk(tlsInfo: any, threatIntel: any) {
   const res = await axios.post(`${ML_SERVICE_URL}/predict`, {
     tls_version: tlsInfo.tlsVersion,
     cipher_suite: tlsInfo.cipherSuite,
@@ -192,17 +194,18 @@ async function startServer() {
 
   app.use(express.json());
 
+  // GET /api/history — Retrieve all past scans
   app.get("/api/history", (req, res) => {
     try {
       const scans = db.prepare("SELECT * FROM scans ORDER BY created_at DESC").all();
-      // Parse JSON strings back to objects
       const parsedScans = scans.map((s: any) => ({
         ...s,
-        tls_risk_score: s.risk_score,
-        security_level: s.risk_score < 30 ? "low" : s.risk_score < 70 ? "moderate" : "high",
-        suspicious: s.risk_score > 60,
-        tls: JSON.parse(s.tls || "{}"),
-        intel: JSON.parse(s.intel || "{}"),
+        tls_risk_score:  s.risk_score,
+        security_level:  s.risk_score < 30 ? "low" : s.risk_score < 70 ? "moderate" : "high",
+        security_posture: s.security_posture || (s.risk_score < 30 ? "secure" : s.risk_score < 70 ? "moderate" : "risky"),
+        high_risk:       s.risk_score > 60,
+        tls:             JSON.parse(s.tls || "{}"),
+        intel:           JSON.parse(s.intel || "{}"),
         feature_importance: JSON.parse(s.feature_importance || "[]"),
       }));
       res.json(parsedScans);
@@ -211,6 +214,7 @@ async function startServer() {
     }
   });
 
+  // DELETE /api/scan/:id — Remove a scan record
   app.delete("/api/scan/:id", (req, res) => {
     try {
       const { id } = req.params;
@@ -221,101 +225,110 @@ async function startServer() {
     }
   });
 
+  // POST /api/scan — Run a new security assessment
   app.post("/api/scan", async (req, res) => {
     const { domain } = req.body;
     if (!domain) return res.status(400).json({ error: "Domain required" });
 
     try {
+      // Step 1: TLS Handshake & Certificate Extraction
       let tlsInfo: any;
       try {
         tlsInfo = await getTLSInfo(domain);
       } catch (tlsErr: any) {
         console.warn(`[TLSGuard] TLS Handshake failed for ${domain}:`, tlsErr.message);
         tlsInfo = {
-          tlsVersion: "Unknown (No TLS)",
+          tlsVersion:  "Unknown (No TLS)",
           cipherSuite: "None",
-          issuer: "Unknown / Connection Failed",
-          validFrom: "Unknown",
-          validTo: "Unknown",
-          subject: "Unknown",
-          fingerprint: "None"
+          issuer:      "Unknown / Connection Failed",
+          validFrom:   "Unknown",
+          validTo:     "Unknown",
+          subject:     "Unknown",
+          fingerprint: "None",
         };
       }
 
+      // Step 2: IP Resolution
       const dns = await import("dns/promises");
-      
       console.log(`[TLSGuard] Resolving IP for domain: ${domain}`);
       let ip = "";
       try {
         const addresses = await dns.resolve4(domain);
-        console.log(`[TLSGuard] DNS Resolve4 Result:`, addresses);
         ip = addresses[0] || "";
       } catch (err: any) {
         console.warn(`[TLSGuard] DNS Resolve4 failed:`, err.message);
         try {
           const lookup = await dns.lookup(domain);
-          console.log(`[TLSGuard] DNS Lookup Result:`, lookup);
           ip = lookup.address || "";
         } catch (lookupErr: any) {
           console.error(`[TLSGuard] DNS Lookup also failed:`, lookupErr.message);
         }
       }
 
+      // Step 3: Threat Intelligence
       console.log(`[TLSGuard] Final IP selected: ${ip}`);
       const threatIntel = await getThreatIntel(domain, ip);
 
-      // NO PREDEFINED RULES - EVERYTHING HANDLED BY ML MODEL
-      const mlResult = await predictRisk(tlsInfo, threatIntel);
+      // Step 4: ML-Driven Risk Assessment
+      const mlResult = await assessRisk(tlsInfo, threatIntel);
 
-      // Final risk calculation - Driven by ML Model
+      // Step 5: Compose final risk score from ML model output only
       const finalRisk = Math.min(100, Math.max(0, Math.round(mlResult.tls_risk_score)));
+
+      // prediction label: reflects security posture, not phishing classification
+      const prediction = mlResult.security_posture === "risky"
+        ? "high_risk"
+        : mlResult.security_posture === "moderate"
+          ? "moderate_risk"
+          : "secure";
 
       const responseData = {
         domain,
-        ip_address: ip,
-        prediction: mlResult.suspicious ? "phishing" : "benign",
-        risk_score: finalRisk,
-        tls_version: tlsInfo.tlsVersion,
-        cipher_suite: tlsInfo.cipherSuite,
-        issuer: tlsInfo.issuer,
-        valid_from: tlsInfo.validFrom,
-        valid_to: tlsInfo.validTo,
-        virustotal_score: threatIntel.vtScore,
-        abuseipdb_score: threatIntel.abuseScore,
-        hosting_provider: threatIntel.hosting,
-        country: threatIntel.country,
+        ip_address:       ip,
+        prediction,
+        risk_score:        finalRisk,
+        security_posture:  mlResult.security_posture,
+        tls_version:       tlsInfo.tlsVersion,
+        cipher_suite:      tlsInfo.cipherSuite,
+        issuer:            tlsInfo.issuer,
+        valid_from:        tlsInfo.validFrom,
+        valid_to:          tlsInfo.validTo,
+        virustotal_score:  threatIntel.vtScore,
+        abuseipdb_score:   threatIntel.abuseScore,
+        hosting_provider:  threatIntel.hosting,
+        country:           threatIntel.country,
         feature_importance: JSON.stringify(mlResult.feature_importance || []),
-        tls: JSON.stringify(tlsInfo),
-        intel: JSON.stringify(threatIntel)
+        tls:               JSON.stringify(tlsInfo),
+        intel:             JSON.stringify(threatIntel),
       };
 
       const stmt = db.prepare(`
         INSERT INTO scans (
-          domain, ip_address, prediction, risk_score, tls_version, 
-          cipher_suite, issuer, valid_from, valid_to, 
+          domain, ip_address, prediction, risk_score, security_posture,
+          tls_version, cipher_suite, issuer, valid_from, valid_to,
           virustotal_score, abuseipdb_score, hosting_provider, country,
           feature_importance, tls, intel
         ) VALUES (
-          @domain, @ip_address, @prediction, @risk_score, @tls_version,
-          @cipher_suite, @issuer, @valid_from, @valid_to,
+          @domain, @ip_address, @prediction, @risk_score, @security_posture,
+          @tls_version, @cipher_suite, @issuer, @valid_from, @valid_to,
           @virustotal_score, @abuseipdb_score, @hosting_provider, @country,
           @feature_importance, @tls, @intel
         )
       `);
-      
+
       const info = stmt.run(responseData);
       const savedScan = db.prepare("SELECT * FROM scans WHERE id = ?").get(info.lastInsertRowid) as any;
 
-      // Parse back for frontend
       res.json({
         ...savedScan,
-        tls_risk_score: savedScan.risk_score,
-        security_level: savedScan.risk_score < 30 ? "low" : savedScan.risk_score < 70 ? "moderate" : "high",
-        suspicious: savedScan.risk_score > 60,
-        confidence: mlResult.confidence,
-        tls: JSON.parse(savedScan.tls || "{}"),
-        intel: JSON.parse(savedScan.intel || "{}"),
-        feature_importance: JSON.parse(savedScan.feature_importance || "[]")
+        tls_risk_score:    savedScan.risk_score,
+        security_level:    savedScan.risk_score < 30 ? "low" : savedScan.risk_score < 70 ? "moderate" : "high",
+        security_posture:  savedScan.security_posture,
+        high_risk:         savedScan.risk_score > 60,
+        confidence:        mlResult.confidence,
+        tls:               JSON.parse(savedScan.tls || "{}"),
+        intel:             JSON.parse(savedScan.intel || "{}"),
+        feature_importance: JSON.parse(savedScan.feature_importance || "[]"),
       });
     } catch (e: any) {
       console.error(e);
@@ -324,8 +337,8 @@ async function startServer() {
   });
 
   app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`[TLSGuard] Security assessment server running on http://localhost:${PORT}`);
   });
 }
 
-startServer(); 
+startServer();
