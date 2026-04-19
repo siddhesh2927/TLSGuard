@@ -1,35 +1,70 @@
 pipeline {
     agent any
-    environment {
-        IMAGE_NAME = "yourproject-image"
-        CONTAINER_NAME = "yourproject-container"
+
+    // We reference the NodeJS tool. 
+    // IMPORTANT: Make sure this is set to NodeJS 20.x or 18.x in Jenkins to avoid the libatomic crash!
+
+    tools {
+        nodejs 'NodeJs'
     }
+
     stages {
-        stage('Clone Repository') {
+        stage('Checkout') {
             steps {
-                git branch: 'main', url: 'https://github.com/yourusername/your-repo.git'
+                echo "Checking out code from Repository..."
+                checkout scm
             }
         }
-        stage('Build Docker Image') {
+
+
+        stage('Install Dependencies') {
             steps {
-                script {
-                    sh 'docker build -t $IMAGE_NAME .'
+                echo "Installing NPM Workspaces Dependencies..."
+                sh 'npm cache clean --force'
+                sh 'npm install'
+            }
+        }
+
+        stage('Verify Type Safety') {
+            steps {
+                echo "Verifying Backend TypeScript Types..."
+                dir('server') {
+                    sh 'npx tsc --noEmit'
                 }
             }
         }
-        stage('Stop and Remove Old Container') {
+
+        stage('Build Frontend App') {
             steps {
-                script {
-                    sh 'docker rm -f $CONTAINER_NAME || true'
+                echo "Testing React Build..."
+                dir('client') {
+                    sh 'npm run build'
                 }
             }
         }
-        stage('Run New Container') {
+
+        stage('Deploy with Docker Compose') {
             steps {
-                script {
-                    sh 'docker run -d --name $CONTAINER_NAME -p 80:80 $IMAGE_NAME'
-                }
+                echo "Cleaning up previous application containers..."
+                sh 'docker rm -f tlsguard-frontend tlsguard-backend || true'
+                echo "Deploying Live Application via Docker Compose..."
+                sh 'docker-compose up -d --build frontend backend'
             }
+        }
+
+    }
+
+    post {
+        always {
+            // Clean up the workspace to save disk space on Jenkins
+            cleanWs()
+            echo "CI/CD Pipeline Finished!"
+        }
+        success {
+            echo "Build was successful! ✅ Your code is verified and safe."
+        }
+        failure {
+            echo "Build failed! ❌ Check the Jenkins logs."
         }
     }
 }
