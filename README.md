@@ -131,21 +131,4 @@ npm run dev         # starts both Node API + Vite dev server
 
 Open [http://localhost:3001](http://localhost:3001)
 
----
 
-## Interview Summary
-
-> The system evaluates the security posture of a domain by analyzing its TLS configuration and certificate properties alongside external threat intelligence signals. Rather than detecting phishing directly, the model identifies risk patterns — such as weak encryption, untrusted certificate issuers, short certificate lifespans, and known threat indicators — and transforms these into structured features fed into a trained ML model. The model outputs a probabilistic risk score and security posture classification, enabling assessment of how secure or potentially risky a domain is based on its network-level behavior, rather than relying on blacklists or signature-based detection.
-
----
-
-## Similar Real-World Systems
-
-- SSL Labs SSL Test
-- Qualys SSL Server Test  
-- SecurityScorecard domain ratings
-- Risk scoring engines in SOC/SIEM tools
-
----
-
-*TLSGuard is a security research and educational project.*
